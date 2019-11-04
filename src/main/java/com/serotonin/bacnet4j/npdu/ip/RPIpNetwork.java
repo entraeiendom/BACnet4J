@@ -86,9 +86,12 @@ public class RPIpNetwork extends IpNetwork {
                 socket.receive(p);
 
                 bytesIn += p.getLength();
+                final byte[] packetData = p.getData();
+                String word = new String(packetData);
+                LOG.debug("Word: " + word);
                 // Create a new byte queue for the message, because the queue will probably be processed in the
                 // transport thread.
-                final ByteQueue queue = new ByteQueue(p.getData(), 0, p.getLength());
+                final ByteQueue queue = new ByteQueue(packetData, 0, p.getLength());
                 final OctetString link = IpNetworkUtils.toOctetString(p.getAddress().getAddress(), p.getPort());
 
                 //FIXME write ByteQueue or DatagramPacket to file.
