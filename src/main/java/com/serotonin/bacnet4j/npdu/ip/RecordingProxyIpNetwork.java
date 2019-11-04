@@ -1,31 +1,3 @@
-/*
- * ============================================================================
- * GNU General Public License
- * ============================================================================
- *
- * Copyright (C) 2015 Infinite Automation Software. All rights reserved.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
- * When signing a commercial license with Infinite Automation Software,
- * the following extension to GPL is made. A special exception to the GPL is
- * included to allow you to distribute a combined work that includes BAcnet4J
- * without being obliged to provide the source code for any proprietary components.
- *
- * See www.infiniteautomation.com for commercial license options.
- *
- * @author Matthew Lohbihler
- */
 package com.serotonin.bacnet4j.npdu.ip;
 
 import com.serotonin.bacnet4j.enums.MaxApduLength;
@@ -42,6 +14,7 @@ import com.serotonin.bacnet4j.util.sero.ByteQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.*;
 import java.util.ArrayList;
@@ -53,17 +26,14 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Use IpNetworkBuilder to create.
- */
-public class IpNetwork extends Network implements Runnable {
-    static final Logger LOG = LoggerFactory.getLogger(IpNetwork.class);
+import static com.serotonin.bacnet4j.npdu.ip.IpNetwork.*;
 
-    public static final byte BVLC_TYPE = (byte) 0x81;
-    public static final int DEFAULT_PORT = 0xBAC0; // == 47808
-    public static final String DEFAULT_BIND_IP = "0.0.0.0";
-
-    public static final int MESSAGE_LENGTH = 2048;
+public class RecordingProxyIpNetwork extends Network implements Runnable {
+    static final Logger LOG = LoggerFactory.getLogger(RecordingProxyIpNetwork.class);
+    private final Network network;
+    private final boolean recordToFile;
+    private final File filename;
+    private final boolean usePlayback;
 
     private final int port;
     private final String localBindAddressStr;
@@ -72,8 +42,8 @@ public class IpNetwork extends Network implements Runnable {
     private final boolean reuseAddress;
 
     // BBMD support
-    private List<BDTEntry> broadcastDistributionTable = new ArrayList<>();
-    final List<FDTEntry> foreignDeviceTable = new CopyOnWriteArrayList<>();
+    private List<IpNetwork.BDTEntry> broadcastDistributionTable = new ArrayList<>();
+    final List<IpNetwork.FDTEntry> foreignDeviceTable = new CopyOnWriteArrayList<>();
     private ScheduledFuture<?> ftdMaintenance;
     private final AtomicBoolean bbmdEnabled = new AtomicBoolean(false);
 
@@ -94,16 +64,65 @@ public class IpNetwork extends Network implements Runnable {
     private long bytesIn;
 
     /**
-     * Use an IpNetworkBuilder to create instances.
+     * Create IP Network that will enable you to record Bacnet traffic to file.
+     *
+     * @param port
+     * @param localBindAddress
+     * @param broadcastAddress
+     * @param subnetMask
+     * @param localNetworkNumber
+     * @param reuseAddress
+     * @param recordToFile       True if you want to record all Bacnet traffic
+     * @param filename           file to save Bacnet traffic. May be null if you are not recording traffic.
+     * @throws IllegalArgumentException when you want to recordToFile, and filename is null.
      */
-    IpNetwork(final int port, final String localBindAddress, final String broadcastAddress, final String subnetMask,
-            final int localNetworkNumber, final boolean reuseAddress) {
-        super(localNetworkNumber);
+    RecordingProxyIpNetwork(int port, String localBindAddress, String broadcastAddress, String subnetMask, int localNetworkNumber, boolean reuseAddress, boolean recordToFile, File filename) throws IllegalArgumentException {
+        this.recordToFile = recordToFile;
+        if (recordToFile) {
+            if (filename == null) {
+                throw new IllegalArgumentException("Filename must have a valid file parameter when you want to record to a file.");
+            } else {
+                network = this; //FIXME will fail
+            }
+        } else {
+            network = new IpNetworkBuilder().withLocalBindAddress(localBindAddress)
+                    .withBroadcast(broadcastAddress, 24)
+                    .withPort(port)
+                    .withSubnet(subnetMask, 24)
+                    .withReuseAddress(reuseAddress)
+                    .build();
+        }
+        this.filename = filename;
+        this.usePlayback = false;
         this.port = port;
         this.localBindAddressStr = localBindAddress;
         this.broadcastAddressStr = broadcastAddress;
         this.subnetMaskStr = subnetMask;
         this.reuseAddress = reuseAddress;
+    }
+
+    /**
+     * Replay Bacnet messages from file.
+     *
+     * @param filename
+     */
+    RecordingProxyIpNetwork(File filename) {
+        network = this; //FIXME will fail
+        recordToFile = false;
+        if (filename == null) {
+            throw new IllegalArgumentException("Filename must have a valid file parameter when you want to play backnet messages from a file.");
+        }
+        if (filename.exists() && filename.canRead()) {
+            this.filename = filename;
+            this.usePlayback = true;
+        } else {
+            throw new IllegalArgumentException("File " + filename + " could not be read.");
+        }
+        this.port = 10478; //FIXME port should be read from file
+        this.localBindAddressStr = "127.0.0.1"; //FIXME localBindAddress;
+        this.broadcastAddressStr = "127.0.0.1"; // FIXME broadcastAddress;
+        this.subnetMaskStr = "255.255.255.0"; //FIXME subnetMask;
+        this.reuseAddress = false; //FIXME reuseAddress;
     }
 
     @Override
@@ -272,7 +291,7 @@ public class IpNetwork extends Network implements Runnable {
 
     @Override
     public void sendNPDU(final Address recipient, final OctetString router, final ByteQueue npdu,
-            final boolean broadcast, final boolean expectsReply) throws BACnetException {
+                         final boolean broadcast, final boolean expectsReply) throws BACnetException {
         final ByteQueue queue = new ByteQueue();
 
         // BACnet virtual link layer detail
@@ -326,6 +345,7 @@ public class IpNetwork extends Network implements Runnable {
                 final ByteQueue queue = new ByteQueue(p.getData(), 0, p.getLength());
                 final OctetString link = IpNetworkUtils.toOctetString(p.getAddress().getAddress(), p.getPort());
 
+                //FIXME write ByteQueue or DatagramPacket to file.
                 handleIncomingData(queue, link);
 
                 // Reset the packet.
@@ -339,6 +359,7 @@ public class IpNetwork extends Network implements Runnable {
     @Override
     protected NPDU handleIncomingDataImpl(final ByteQueue queue, final OctetString linkService) throws Exception {
         LOG.trace("Received request from {}", linkService);
+        //If recording, save ByteQueue to file??
 
         // Initial parsing of IP message.
         // BACnet/IP
@@ -356,9 +377,9 @@ public class IpNetwork extends Network implements Runnable {
         if (function == 0x0) {
             final int result = BACnetUtils.popShort(queue);
 
-           if (result == 0x10)
-                LOG.error("Write-Broadcast-Distrubution-Table failed!");  
-           else if (result == 0x20)
+            if (result == 0x10)
+                LOG.error("Write-Broadcast-Distrubution-Table failed!");
+            else if (result == 0x20)
                 LOG.error("Read-Broadcast-Distrubution-Table failed!");
             else if (result == 0x30)
                 LOG.error("Register-Foreign-Device failed!");
@@ -515,7 +536,7 @@ public class IpNetwork extends Network implements Runnable {
             return false;
         if (getClass() != obj.getClass())
             return false;
-        final IpNetwork other = (IpNetwork) obj;
+        final RecordingProxyIpNetwork other = (RecordingProxyIpNetwork) obj;
         if (broadcastAddressStr == null) {
             if (other.broadcastAddressStr != null)
                 return false;
@@ -563,10 +584,10 @@ public class IpNetwork extends Network implements Runnable {
 
         if (bbmdEnabled.get()) {
             try {
-                final List<BDTEntry> list = new ArrayList<>();
+                final List<IpNetwork.BDTEntry> list = new ArrayList<>();
 
                 while (queue.size() > 0) {
-                    final BDTEntry e = new BDTEntry();
+                    final IpNetwork.BDTEntry e = new IpNetwork.BDTEntry();
                     e.address = new byte[4];
                     queue.pop(e.address);
                     e.port = queue.popU2B();
@@ -584,7 +605,7 @@ public class IpNetwork extends Network implements Runnable {
                 response.pushU2B(0x10); // NAK
             }
         } else {
-            response.pushU2B(0x10); // NAK  
+            response.pushU2B(0x10); // NAK
         }
         sendPacket(IpNetworkUtils.getInetSocketAddress(origin), response.popAll());
     }
@@ -596,7 +617,7 @@ public class IpNetwork extends Network implements Runnable {
             try {
                 final ByteQueue list = new ByteQueue();
 
-                for (final BDTEntry e : broadcastDistributionTable) {
+                for (final IpNetwork.BDTEntry e : broadcastDistributionTable) {
                     list.push(e.address);
                     list.pushU2B(e.port);
                     list.push(e.distributionMask);
@@ -613,9 +634,9 @@ public class IpNetwork extends Network implements Runnable {
                 response.pushU2B(0x20); // NAK
             }
         } else {
-                response.push(0); // Result
-                response.pushU2B(6); // Length
-                response.pushU2B(0x20); // NAK
+            response.push(0); // Result
+            response.pushU2B(6); // Length
+            response.pushU2B(0x20); // NAK
         }
         sendPacket(IpNetworkUtils.getInetSocketAddress(origin), response.popAll());
     }
@@ -645,8 +666,8 @@ public class IpNetwork extends Network implements Runnable {
             final byte[] myAddress = localBindAddress.getAddress().getAddress();
 
             // Find this BDT entry.
-            BDTEntry thisEntry = null;
-            for (final BDTEntry e : broadcastDistributionTable) {
+            IpNetwork.BDTEntry thisEntry = null;
+            for (final IpNetwork.BDTEntry e : broadcastDistributionTable) {
                 if (Arrays.equals(e.address, myAddress)) {
                     thisEntry = e;
                     break;
@@ -681,7 +702,7 @@ public class IpNetwork extends Network implements Runnable {
             sendPacket(InetAddrCache.get(broadcastAddressStr, port), toSend);
 
         // Forward to all foreign devices.
-        for (final FDTEntry fd : foreignDeviceTable)
+        for (final IpNetwork.FDTEntry fd : foreignDeviceTable)
             sendPacket(fd.address, toSend);
     }
 
@@ -702,14 +723,14 @@ public class IpNetwork extends Network implements Runnable {
             final byte[] myAddress = localBindAddress.getAddress().getAddress();
 
             // Send to all subnets except own
-            for (final BDTEntry e : broadcastDistributionTable) {
+            for (final IpNetwork.BDTEntry e : broadcastDistributionTable) {
                 if (Arrays.equals(e.address, myAddress))
                     continue;
                 sendToBDT(e, toSend);
             }
 
             // Forward to all foreign devices.
-            for (final FDTEntry fd : foreignDeviceTable)
+            for (final IpNetwork.FDTEntry fd : foreignDeviceTable)
                 sendPacket(fd.address, toSend);
         } catch (final UnknownHostException e) {
             throw new BACnetException(e);
@@ -731,9 +752,9 @@ public class IpNetwork extends Network implements Runnable {
                 response.pushU2B(0x30); // NAK
             } else {
                 // Check if the device is already in the list. If so, update its start time. Otherwise, add it.
-                FDTEntry fd = null;
+                IpNetwork.FDTEntry fd = null;
                 synchronized (foreignDeviceTable) {
-                    for (final FDTEntry e : foreignDeviceTable) {
+                    for (final IpNetwork.FDTEntry e : foreignDeviceTable) {
                         if (e.address.equals(origin)) {
                             fd = e;
                             break;
@@ -742,7 +763,7 @@ public class IpNetwork extends Network implements Runnable {
 
                     if (fd == null) {
                         // Add the FDT entry
-                        fd = new FDTEntry();
+                        fd = new IpNetwork.FDTEntry();
                         fd.address = origin;
                         foreignDeviceTable.add(fd);
 
@@ -752,9 +773,9 @@ public class IpNetwork extends Network implements Runnable {
                                 final long now = getTransport().getLocalDevice().getClock().millis();
 
                                 synchronized (foreignDeviceTable) {
-                                    final List<FDTEntry> toRemove = new ArrayList<>();
+                                    final List<IpNetwork.FDTEntry> toRemove = new ArrayList<>();
 
-                                    for (final FDTEntry e : foreignDeviceTable) {
+                                    for (final IpNetwork.FDTEntry e : foreignDeviceTable) {
                                         if (e.endTime < now) {
                                             LOG.debug("Removing expired foreign device: " + e);
                                             toRemove.add(e);
@@ -790,13 +811,13 @@ public class IpNetwork extends Network implements Runnable {
             try {
                 final ByteQueue list = new ByteQueue();
 
-                for (final FDTEntry e : foreignDeviceTable) {
+                for (final IpNetwork.FDTEntry e : foreignDeviceTable) {
                     pushISA(list, e.address);
                     list.pushU2B(e.timeToLive);
 
                     int remaining = (int) (e.endTime - now) / 1000;
-                    if (remaining < 0) 
-                    // Hasn't yet been cleaned up.
+                    if (remaining < 0)
+                        // Hasn't yet been cleaned up.
                         remaining = 0;
                     if (remaining > 65535)
                         remaining = 65535;
@@ -834,8 +855,8 @@ public class IpNetwork extends Network implements Runnable {
         response.pushU2B(6); // Length
 
         synchronized (foreignDeviceTable) {
-            FDTEntry toDelete = null;
-            for (final FDTEntry fd : foreignDeviceTable) {
+            IpNetwork.FDTEntry toDelete = null;
+            for (final IpNetwork.FDTEntry fd : foreignDeviceTable) {
                 if (Arrays.equals(fd.address.getAddress().getAddress(), addr) && fd.address.getPort() == port) {
                     toDelete = fd;
                     break;
@@ -857,8 +878,8 @@ public class IpNetwork extends Network implements Runnable {
         final InetSocketAddress origin = IpNetworkUtils.getInetSocketAddress(originStr);
 
         // Find the foreign device.
-        FDTEntry originFDT = null;
-        for (final FDTEntry fd : foreignDeviceTable) {
+        IpNetwork.FDTEntry originFDT = null;
+        for (final IpNetwork.FDTEntry fd : foreignDeviceTable) {
             if (fd.address.equals(origin)) {
                 originFDT = fd;
                 break;
@@ -892,7 +913,7 @@ public class IpNetwork extends Network implements Runnable {
         try {
             // Send to all BDTs except own
             final byte[] myAddress = localBindAddress.getAddress().getAddress();
-            for (final BDTEntry e : broadcastDistributionTable) {
+            for (final IpNetwork.BDTEntry e : broadcastDistributionTable) {
                 if (Arrays.equals(e.address, myAddress))
                     continue;
                 sendToBDT(e, toSend);
@@ -902,7 +923,7 @@ public class IpNetwork extends Network implements Runnable {
         }
 
         // Forward to all foreign devices except the origin.
-        for (final FDTEntry fd : foreignDeviceTable) {
+        for (final IpNetwork.FDTEntry fd : foreignDeviceTable) {
             if (fd != originFDT)
                 sendPacket(fd.address, toSend);
         }
@@ -912,7 +933,7 @@ public class IpNetwork extends Network implements Runnable {
         return true;
     }
 
-    private void sendToBDT(final BDTEntry e, final byte[] toSend) throws UnknownHostException, BACnetException {
+    private void sendToBDT(final IpNetwork.BDTEntry e, final byte[] toSend) throws UnknownHostException, BACnetException {
         // J.4.5: The B/IP address to which the Forwarded-NPDU message is sent is formed by inverting the broadcast
         // distribution mask in the BDT entry and logically ORing it with the BBMD address of the same entry.
         final byte[] target = new byte[4];
@@ -977,12 +998,11 @@ public class IpNetwork extends Network implements Runnable {
         pushISA(queue, fdtEntry);
         sendPacket(addr, queue.popAll());
     }
-    
+
     /**
      * Enable BBMD support. Allow other device to register as BBMD or foreign device. *
      */
     public void enableBBMD() {
         bbmdEnabled.set(true);
     }
-
 }

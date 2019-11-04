@@ -28,10 +28,10 @@
  */
 package com.serotonin.bacnet4j.npdu.ip;
 
-import static com.serotonin.bacnet4j.npdu.ip.IpNetworkUtils.toIpAddrString;
-
 import com.serotonin.bacnet4j.type.constructed.Address;
 import com.serotonin.bacnet4j.util.BACnetUtils;
+
+import static com.serotonin.bacnet4j.npdu.ip.IpNetworkUtils.toIpAddrString;
 
 public class IpNetworkBuilder {
     private String localBindAddress = IpNetwork.DEFAULT_BIND_IP;
@@ -130,5 +130,13 @@ public class IpNetworkBuilder {
         }
 
         return new IpNetwork(port, localBindAddress, broadcastAddress, subnetMask, localNetworkNumber, reuseAddress);
+    }
+
+    public IpNetwork buildRecordingProxy() {
+        if (broadcastAddress == null || subnetMask == null) {
+            throw new IllegalArgumentException("Either withBroadcast or withSubnet must be called.");
+        }
+
+        return new RPIpNetwork(port, localBindAddress, broadcastAddress, subnetMask, localNetworkNumber, reuseAddress);
     }
 }
